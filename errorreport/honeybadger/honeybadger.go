@@ -1,0 +1,72 @@
+package honeybadger
+
+import (
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/honeybadger-io/honeybadger-go"
+	"github.com/imgproxy/imgproxy/v4/errctx"
+)
+
+var (
+	metaReplacer = strings.NewReplacer("-", "_", " ", "_")
+)
+
+type Reporter struct {
+	client *honeybadger.Client
+}
+
+func New(config *Config) (*Reporter, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
+	if len(config.Key) == 0 {
+		return nil, nil
+	}
+
+	client := honeybadger.New(honeybadger.Configuration{
+		APIKey:  config.Key,
+		Env:     config.Env,
+		Backend: config.Backend,
+	})
+
+	return &Reporter{client: client}, nil
+}
+
+func (r *Reporter) Report(err errctx.Error, req *http.Request, meta map[string]any) {
+	var header http.Header
+	var reqURL *url.URL
+	if req != nil {
+		header = req.Header
+		reqURL = req.URL
+	}
+
+	extra := make(honeybadger.CGIData, len(header)+len(meta))
+
+	for k, v := range header {
+		key := "HTTP_" + metaReplacer.Replace(strings.ToUpper(k))
+		extra[key] = v[0]
+	}
+
+	for k, v := range meta {
+		key := metaReplacer.Replace(strings.ToUpper(k))
+		extra[key] = v
+	}
+
+	// imgproxy may wrap errors using errctx.WrappedError to add context, so Honeybadger
+	// would report the error type as *errctx.WrappedError.
+	//
+	// To avoid this, we provide error class information explicitly.
+	errClass := honeybadger.ErrorClass{Name: errctx.ErrorType(err)}
+
+	if _, repErr := r.client.Notify(err, errClass, reqURL, extra); repErr != nil {
+		slog.Warn("Failed to report error to Honeybadger", "error", repErr)
+	}
+}
+
+func (r *Reporter) Close() {
+	r.client.Flush()
+}

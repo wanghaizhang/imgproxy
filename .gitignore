@@ -1,0 +1,17 @@
+*.swp
+imgproxy
+tmp/
+.tmp
+.test-data
+.vscode/
+.DS_Store
+
+.gitmodules
+docker-base
+docs/sitemap.txt
+.env
+.imgproxyrc
+k6/*.json
+.devcontainer/images
+.claude
+.lycheecache

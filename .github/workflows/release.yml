@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+jobs:
+  container-info:
+    uses: ./.github/workflows/container-info.yml
+
+  ci:
+    needs: [container-info]
+    uses: ./.github/workflows/ci.yml
+    with:
+      container_image: ${{ needs.container-info.outputs.image }}
+
+  build:
+    needs: [ci]
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Prepare notes
+        run: |
+          # Extract changelog entries between this and previous version headers
+          escaped_version=$(echo ${GITHUB_REF_NAME#v} | sed -e 's/[]\/$*.^[]/\\&/g')
+          awk "BEGIN{inrelease=0} /## \[${escaped_version}\]/{inrelease=1;next} /## \[[0-9]+\.[0-9]+\.[0-9]+.*\]/{inrelease=0;exit} {if (inrelease) print}" CHANGELOG.md \
+            > RELEASE_NOTES.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          body_path: RELEASE_NOTES.txt
+          # If the tag contains a hyphen, it is a pre-release (e.g. 1.2.3-rc1, 1.2.3-beta, etc.).
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  update-helm-chart:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository Dispatch
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.WORKFLOW_DISPATCH_TOKEN }}
+          repository: imgproxy/imgproxy-helm
+          event-type: imgproxy-version-updated
+          client-payload: '{"tag": "${{ github.ref_name }}"}'

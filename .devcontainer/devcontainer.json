@@ -1,0 +1,46 @@
+{
+    "name": "imgproxy",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "imgproxy",
+    "workspaceFolder": "/workspaces/imgproxy",
+    "shutdownAction": "stopCompose",
+    "forwardPorts": [8081, 8091, 8071],
+    "portsAttributes": {
+        "8081": {
+            "label": "imgproxy",
+            "onAutoForward": "notify"
+        },
+        "8091": {
+            "label": "Prometheus metrics",
+            "onAutoForward": "silent"
+        },
+        "8071": {
+            "label": "Utilities (pprof, etc.)",
+            "onAutoForward": "silent"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "golang.go",
+                "ms-vscode.cpptools"
+            ],
+            "settings": {
+                "go.lintTool": "golangci-lint-v2",
+                "go.alternateTools": {
+                    "golangci-lint-v2": "/usr/local/bin/golangci-lint"
+                }
+            }
+        }
+    },
+    "postCreateCommand": {
+        "installLefthook": "go tool lefthook install",
+        "installGlobalRun": "./run install-global",
+        // Add a wrapper over `go tool` for golangci-lint so that VS Code can use it
+        "golangCiBin": "echo '#!/bin/bash\ngo tool golangci-lint $@' > /usr/local/bin/golangci-lint && chmod +x /usr/local/bin/golangci-lint"
+    },
+    "initializeCommand": {
+        "linkImagesDir": "if [ ! -e ${localWorkspaceFolder}/.devcontainer/images ] && [ ! -L ${localWorkspaceFolder}/.devcontainer/images ]; then ln -s ${localWorkspaceFolder}/testdata/test-images ${localWorkspaceFolder}/.devcontainer/images; fi"
+    },
+    "overrideCommand": true
+}
