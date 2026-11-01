@@ -1135,7 +1135,7 @@ vips_dtext_go(const char *text, int width, int height, VipsImage **out)
   VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 4);
 
   int res =
-      vips_dtext(&t[0], text, "width", width, "height", height, "font", "sans", NULL) ||
+      vips_text(&t[0], text, "width", width, "height", height, "font", "sans", NULL) ||
       vips_colourspace(t[0], &t[1], VIPS_INTERPRETATION_sRGB, NULL) ||
       vips_cast(t[1], &t[2], VIPS_FORMAT_UCHAR, NULL) ||
       vips_addalpha(t[2], out, NULL);
