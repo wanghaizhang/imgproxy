@@ -19,7 +19,8 @@ jobs:
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
-
+    env:
+      BUILDKIT_PROGRESS: plain
     steps:
       # 1. 拉取 text-watermark 分支代码
       - name: Checkout
