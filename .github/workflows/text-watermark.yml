@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - text-watermark
     paths:
       - 'Dockerfile'
       - '**/*.go'
       - '**/*.c'
       - '**/*.h'
-      - '.github/workflows/build-imgproxy.yml'
+      - '.github/workflows/text-watermark.yml'
 
 permissions:
   contents: read
