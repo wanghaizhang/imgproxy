@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"context"
 	"math"
 
 	"github.com/imgproxy/imgproxy/v4/imagedata"
