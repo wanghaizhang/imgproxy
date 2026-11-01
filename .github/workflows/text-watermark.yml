@@ -1,78 +1,66 @@
-name: Build imgproxy - text-watermark
+name: Build imgproxy Docker Image
 
 on:
   workflow_dispatch:
-
   push:
     branches:
-      - text-watermark
+      - main
+    paths:
+      - 'Dockerfile'
+      - '**/*.go'
+      - '**/*.c'
+      - '**/*.h'
+      - '.github/workflows/build-imgproxy.yml'
 
 permissions:
   contents: read
-  packages: write
-
-concurrency:
-  group: imgproxy-text-watermark
-  cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Docker Image
+    name: Build Linux AMD64 Image
     runs-on: ubuntu-latest
-    env:
-      BUILDKIT_PROGRESS: plain
+
     steps:
-      # 1. 拉取 text-watermark 分支代码
+      # 1. 获取源码
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: text-watermark
 
-      # 2. 自动识别 Dockerfile 位置
-      - name: Locate Dockerfile
-        id: dockerfile
-        shell: bash
-        run: |
-          if [ -f "./docker/Dockerfile" ]; then
-            echo "file=./docker/Dockerfile" >> "$GITHUB_OUTPUT"
-          elif [ -f "./Dockerfile" ]; then
-            echo "file=./Dockerfile" >> "$GITHUB_OUTPUT"
-          else
-            echo "ERROR: Dockerfile not found"
-            exit 1
-          fi
-
-      # 3. 初始化 Docker Buildx
-      - name: Set up Docker Buildx
+      # 2. 配置 Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 4. 登录 GitHub Container Registry
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # 5. 生成镜像标签
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=text-watermark
-            type=sha,format=short
-
-      # 6. 构建并推送镜像
-      - name: Build and Push
+      # 3. 编译并导出 Docker 镜像 TAR
+      - name: Build imgproxy
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
-          file: ${{ steps.dockerfile.outputs.file }}
+          file: ./Dockerfile
+
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+
+          push: false
+
+          tags: imgproxy:custom
+
+          outputs: type=docker,dest=/tmp/imgproxy.tar
+
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 4. 检查 TAR 文件
+      - name: Verify Docker Image
+        run: |
+          ls -lh /tmp/imgproxy.tar
+          file /tmp/imgproxy.tar
+          tar -tf /tmp/imgproxy.tar | head -20
+
+      # 5. 上传 TAR 到 GitHub
+      - name: Upload Docker Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgproxy-linux-amd64
+          path: /tmp/imgproxy.tar
+          if-no-files-found: error
+          retention-days: 14
