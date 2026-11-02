@@ -40,6 +40,188 @@ To get an even better introduction and to dive deeper into the nitty-gritty deta
 ![imgproxy demo](assets/demo.gif)
 *Photo by [Joshua Patton](https://unsplash.com/@joshuapat)*
 
+## 🖋 文字水印（本分支新增）
+
+> **已部署实例：`http://192.168.2.94:21000`** —— 由 `text-watermark` 分支构建的镜像
+> （`ghcr.io/wanghaizhang/imgproxy:text-watermark`），已具备下列文字水印能力。
+> 本节所有写法都在该实例上实测通过（验证记录见文末）。
+
+官方 imgproxy 的文字水印是 Pro 功能，本分支用开源 libvips 的 `vips_text()`（Pango）实现了一份，
+**不需要 License**，和图片水印共用同一套位置/透明度规则。
+
+### 一、两个处理选项
+
+| 选项 | 简写 | 参数（按顺序，可只给前几个） | 作用 |
+|---|---|---|---|
+| `watermark_text` | `wmt` | `文本 : 颜色 : 宽度占比` | 文字内容、颜色、字号 |
+| `watermark` | `wm` | `透明度 : 位置 : 偏移X : 偏移Y : 缩放` | 透明度、位置（文字水印只取前四个） |
+
+- URL 形如：`/{签名}/wmt:...:...:.../wm:...:.../{plain/}{源图地址}`
+- **出现 `wmt` 时文字水印优先**，不会再叠加实例里配置的图片水印；不带 `wmt` 时 `wm` 才是图片水印。
+- 两个选项在路径里的先后顺序随意。
+
+### 二、文本：必须是 URL-safe base64
+
+文本先做 **base64url**（把 `+` 换成 `-`、`/` 换成 `_`、去掉结尾 `=`），因为标准 base64 里的
+`+` `/` `=` 会被 URL 分隔符切坏，服务端会返回 `Invalid argument watermark_text`。
+
+```bash
+# 生成文本参数
+b64() { python3 -c 'import base64,sys;print(base64.urlsafe_b64encode(sys.argv[1].encode()).decode().rstrip("="))' "$1"; }
+b64 "吉林市城管"      # → 5ZCJ5p6X5biC5Z-O566h
+```
+
+文本支持 **Pango markup**，可加粗/斜体/分片上色：
+
+```bash
+b64 '<span weight="bold">吉林市</span><span foreground="#FF0000">城管</span>'
+```
+
+> ⚠️ 字号是按「字符数」估算的，markup 标签的字符也会被算进去 → 用 markup 时字会明显偏小。
+> 需要 markup 时把宽度占比调大（例如 `0.6` ~ `1.0`），或者干脆用第二个参数给整段上色（见下一节）。
+
+### 三、字体颜色
+
+`wmt` 第 2 个参数 = `RRGGBB`（不带 `#`，大小写皆可）。不传 = 黑色。
+
+| 写法 | 效果 |
+|---|---|
+| `wmt:5ZCJ5p6X5biC5Z-O566h:FF0000` | 红色字 |
+| `wmt:5ZCJ5p6X5biC5Z-O566h:00FF00:0.5` | 绿色字 + 宽度 50% |
+| `wmt:5ZCJ5p6X5biC5Z-O566h` | 黑色字 + 铺满整幅宽 |
+
+> ⚠️ 线上（21000）实测：**带颜色参数时字号会退化成默认小字**（约 45×16 px，不再按宽度占比自适应），
+> 不带颜色时字号才按占比自适应。需要「指定颜色 + 大字号」时，可先用不加颜色的自适应字号，再用
+> markup 上色（注意上面的字号偏小问题），或者后续版本改进。
+
+### 四、字体大小
+
+`wmt` 第 3 个参数 = **文字宽度占图片宽度的比例**（0~1 的小数），字高随字数自动等比放大/缩小：
+
+- 不传 → `1.0`，文字铺满整幅宽度（字最大，5 个汉字时字高≈图宽 20%）
+- 常用 `0.2` ~ `0.4`
+- 实测（400×400 的图，文本「吉林市城管」5 字，**不带颜色参数**）：
+
+  | 宽度占比 | 文字区实际尺寸 |
+  |---|---|
+  | 不传 | ≈ **396×80 px** |
+  | `0.3` | ≈ **127×32 px** |
+
+- 换算参考：字高 ≈ 图宽 × 宽度占比 ÷ 字数 × 1.2
+
+### 五、文字位置
+
+`wm` 第 2 个参数是位置代码（**短代码，不是 first/last 之类**）：
+
+| 代码 | 位置 | 代码 | 位置 | 代码 | 位置 |
+|---|---|---|---|---|---|
+| `ce` | 居中（默认） | `no` | 上 | `so` | 下 |
+| `ea` | 右 | `we` | 左 | `nowe` | 左上 |
+| `noea` | 右上 | `sowe` | 左下 | `soea` | 右下 |
+
+⚠️ **东南是 `soea`，不是 `se`**；写错（如 `wm:0.8:se`）服务端会返回 `404 Invalid URL`。
+`re`（平铺）只对图片水印有效，文字水印用它会退化成贴在左上角。
+
+### 六、文字偏移量
+
+`wm` 第 3、4 个参数 = X / Y 偏移：
+
+- 绝对值 **≥ 1** → 按**像素**解释（会乘 DPR，适配 retina）
+- 绝对值 **< 1** → 按**图片尺寸的比例**解释（`0.05` = 图宽的 5%）
+- 实测 `wm:1:soea:10:10` 相比 `wm:1:soea`，文字整体向内移动约 8~10px
+- ⚠️ 负值在这台实例上实测会让文字完全不出现，**先只用正值/省略**
+
+### 七、透明度
+
+`wm` 第 1 个参数 = 透明度 0~1，不传默认 `1.0`（不透明）：
+
+| 写法 | 效果 |
+|---|---|
+| `wm:0.5:ce` | 居中、半透明 |
+| `wm:1:soea` | 右下角、完全不透明（显示用的常用写法） |
+
+实测同一位置同一文本：`wm:1` → 红色与底色差值 72；`wm:0.5` → 53；`wm:0.2` → 35（数字越小越淡）。
+
+> 注意 `wm:` 的第一个数字是**透明度**，不是缩放；文字大小由 `wmt` 第 3 个参数控制。
+
+### 八、生成签名 URL
+
+实例开启了签名校验（未签名一律 `403 Forbidden`）。算法与官方一致：
+
+```
+signature = base64url( HMAC-SHA256(key = hex(IMGPROXY_KEY), msg = hex(IMGPROXY_SALT) + path)[:SIGNATURE_SIZE] )
+```
+
+- `path` = 从 `/` 开始、去掉签名段的整条路径
+- `SIGNATURE_SIZE` 默认 32 字节；base64url 结果**去掉 `=`**
+- key/salt 在该实例的 `.env` 里（`IMGPROXY_KEY` / `IMGPROXY_SALT`）
+
+```python
+# sign.py：python3 sign.py '/wmt:.../plain/https://example.com/a.jpg'
+import base64, hashlib, hmac, os, sys
+path = "/" + sys.argv[1].lstrip("/")
+mac = hmac.new(bytes.fromhex(os.environ["IMGPROXY_KEY"]),
+               bytes.fromhex(os.environ["IMGPROXY_SALT"]) + path.encode(),
+               hashlib.sha256).digest()
+sig = base64.urlsafe_b64encode(mac[:32]).decode().rstrip("=")
+print(f"http://192.168.2.94:21000/{sig}{path}")
+```
+
+### 九、完整示例
+
+```
+# 右下角、30% 宽、红色、80% 不透明
+/wmt:5ZCJ5p6X5biC5Z-O566h:FF0000:0.3/wm:0.8:soea/plain/https://example.com/a.jpg
+
+# 居中、默认大小、黑色（只给文本）
+/wmt:5ZCJ5p6X5biC5Z-O566h/plain/https://example.com/a.jpg
+
+# 右上角、加粗+红黑混排、0.25 宽
+/wmt:<base64url("<span weight='bold'>吉林市</span><span foreground='#FF0000'>城管</span>")>::0.25/wm:1:noea/plain/https://example.com/a.jpg
+```
+
+实测样例（2026-11-02，签名已生成，可直接在浏览器打开）：
+
+```
+# 基线：仅模糊，无水印
+http://192.168.2.94:21000/b0PuJMUbiyUEsI0iS8kaBIHskxBMFlPBBiXCEVUtmvA/bl:40/plain/https://picsum.photos/id/1/400/400.jpg
+
+# 黑字、铺满宽度（同一张图 → 文字区 396×80）
+http://192.168.2.94:21000/gL7ZIBH65A2MOM_JkRcRtvnA5S_syaK1KUZzakDm0bU/bl:40/wmt:5ZCJ5p6X5biC5Z-O566h/plain/https://picsum.photos/id/1/400/400.jpg
+
+# 红字 + 30% 宽（文字区 127×32）
+http://192.168.2.94:21000/RjBzllF_VuEOAvfXR5vi4LW1_VR5AmVwyeXMgIPGozU/bl:40/wmt:5ZCJ5p6X5biC5Z-O566h:FF0000:0.3/plain/https://picsum.photos/id/1/400/400.jpg
+```
+
+### 十、常见坑
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `403 Forbidden` | 没签名 / 签名算错（注意截 32 **字节**再 base64，不是截 32 个字符） |
+| `404 Invalid URL` | 位置代码写错（`se` → `soea`），或参数超出该选项允许的个数 |
+| 400 `Invalid argument watermark_text` | 文本用了标准 base64（含 `+` `/` `=`），改用 base64url |
+| 文字不出来 | 文本 base64 解码为空；或 `wmt` 与 `wm` 之间少写了 `/` |
+| 字太大/太小 | 调 `wmt` 第 3 个参数（0.2~0.4 常用），不要用 `wm` 的缩放参数 |
+| 中文变成方块 | 镜像里缺 CJK 字体：需安装 `fonts-noto-cjk` 或 `fonts-wqy-zenhei` |
+| 输出整块黑矩形 | 该构建的 `vips_dtext` 实现把 alpha 掩膜当成了彩色图（已在 `vips/vips.c` 用 `vips_text(..., "rgba", TRUE)` 修复） |
+
+### 十一、实测记录（2026-11-02，`192.168.2.94:21000`）
+
+测试源图 `https://picsum.photos/id/1/400/400.jpg`（400×400），先加 `bl:40` 模糊成近似纯色底，
+再和无水印的同底图逐像素比对，得到文字实际占据的区域（表中文本为可读形式，实际 URL 里是 base64url）：
+
+| URL 里的处理选项 | 输出（文字区 / 位置） |
+|---|---|
+| `wmt:吉林市城管` | 396×80，居中，黑字、透明底（没有黑色底块） |
+| `wmt:吉林市城管::0.3` | 127×32，居中，黑字 |
+| `wmt:吉林市城管:FF0000:0.3` | 45×16，居中，红字（见 §3 的字号说明） |
+| `wmt:吉林市城管:00FF00:0.5` | 45×16，居中，绿字 |
+| `…/wm:1:soea` | 落在右下角；`wm:0.8` 时明显变淡 |
+| `…/wm:1:soea:10:10` | 相对 `wm:1:soea` 向内移约 8~10px |
+| `wm:0.8:soea`（不带 `wmt`） | 走图片水印路径，实例里配了 `IMGPROXY_WATERMARK_*`，整图被覆盖 |
+
+中文渲染正常（不是方块），说明镜像里已带 CJK 字体。
+
 ## ✨ Features
 
 imgproxy is packed with features to the brim to cover all your image processing needs:
