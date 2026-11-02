@@ -1131,18 +1131,21 @@ vips_dtext_go(const char *text, int width, int height, VipsImage **out)
   if (width < 1) width = 1;
   if (height < 1) height = 1;
 
-  VipsImage *base = vips_image_new();
-  VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 4);
-
-  int res =
-      vips_text(&t[0], text, "width", width, "height", height, "font", "sans", NULL) ||
-      vips_colourspace(t[0], &t[1], VIPS_INTERPRETATION_sRGB, NULL) ||
-      vips_cast(t[1], &t[2], VIPS_FORMAT_UCHAR, NULL) ||
-      vips_addalpha(t[2], out, NULL);
-
-  VIPS_UNREF(base);
-
-  return res;
+  /* "rgba" makes vips_text return a 4-band, straight-alpha sRGB image with the
+   * Pango markup colours already applied.
+   *
+   * Without it vips_text returns ONLY the alpha mask (a single band), and
+   * turning that mask into an RGBA image by hand (colourspace to sRGB +
+   * addalpha) produces an opaque box: colourspace turns the mask into
+   * white-text-on-black and addalpha appends alpha = 255 everywhere, so
+   * compositing it over the image paints a solid rectangle.
+   */
+  return vips_text(out, text,
+      "width", width,
+      "height", height,
+      "font", "sans",
+      "rgba", TRUE,
+      NULL);
 }
 
 int

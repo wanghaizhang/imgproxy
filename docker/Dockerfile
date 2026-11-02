@@ -29,6 +29,7 @@ RUN apt-get update \
   libstdc++6 \
   fontconfig-config \
   fonts-dejavu-core \
+  fonts-noto-cjk \
   media-types \
   libjemalloc2 \
   libtcmalloc-minimal4 \

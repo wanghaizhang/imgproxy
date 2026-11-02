@@ -2,6 +2,7 @@ package processing
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/imgproxy/imgproxy/v4/imagedata"
@@ -206,17 +207,28 @@ func (p *Processor) applyWatermark(
 // renderTextWatermark renders a Pango-markup text watermark onto the image.
 // The text is Pango-markup encoded (e.g. "<span foreground='red' weight='bold'>
 // Hello</span>"). Opacity, position, and scale follow the same conventions as
-// the image watermark. This uses libvips' vips_dtext(), which is available in
+// the image watermark. This uses libvips' vips_text(), which is available in
 // the open-source libvips — no imgproxy Pro feature required.
 func (p *Processor) renderTextWatermark(
 	_ context.Context,
 	img *vips.Image,
 	po ProcessingOptions,
 	offsetScale float64,
+	opacity float64,
 ) error {
 	text := po.WatermarkText()
 	if text == "" {
 		return nil
+	}
+
+	// Pango renders the text in black unless the markup says otherwise, so an
+	// explicit watermark.text_color has to be injected into the markup.
+	if po.Has(keys.WatermarkTextColor) {
+		c := po.WatermarkTextColor()
+		text = fmt.Sprintf(
+			`<span foreground="#%02X%02X%02X">%s</span>`,
+			c.R, c.G, c.B, text,
+		)
 	}
 
 	width := img.Width()
@@ -228,9 +240,9 @@ func (p *Processor) renderTextWatermark(
 		textWidth = max(imath.ScaleToEven(width, textScale), 1)
 	}
 
-	// Estimate a reasonable text height from the character count. Pango renders
-	// into the provided width; we pick a height proportional to the text so
-	// gravity positioning works naturally.
+	// Estimate a reasonable text height from the character count. libvips
+	// auto-fits the font size so the text fills the width x height box, and
+	// gravity positioning works on that box.
 	runes := len([]rune(text))
 	fontSize := float64(max(textWidth/max(runes, 1), 8))
 	textHeight := int(fontSize * 1.2)
@@ -267,19 +279,22 @@ func (p *Processor) renderTextWatermark(
 		return nil
 	}
 
-	// img.ApplyWatermark already applies opacity to the watermark alpha channel
-	// internally, so opacity here is applied to the rendered text.
-	return img.ApplyWatermark(wm, left, top, 1.0)
+	// img.ApplyWatermark applies the opacity to the watermark alpha channel.
+	return img.ApplyWatermark(wm, left, top, opacity)
 }
 
 func (p *Processor) watermark(c *Context) error {
 	// Text watermark takes precedence when watermark_text is set.
 	if text := c.PO.WatermarkText(); text != "" {
-		if c.PO.WatermarkOpacity() == 0 {
-			// Default opacity when not explicitly set.
-			c.PO.Set(keys.WatermarkOpacity, 1.0)
+		opacity := c.PO.WatermarkOpacity()
+		if opacity == 0 {
+			// Default opacity when not explicitly set. Kept local on purpose:
+			// writing it back into the shared options would leak into the
+			// per-frame processing of animated images.
+			opacity = 1.0
 		}
-		return p.renderTextWatermark(c.Ctx, c.Img, c.PO, c.DprScale)
+
+		return p.renderTextWatermark(c.Ctx, c.Img, c.PO, c.DprScale, opacity)
 	}
 
 	if p.watermarkProvider == nil || c.PO.WatermarkOpacity() == 0 {
