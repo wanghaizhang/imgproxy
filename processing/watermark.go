@@ -213,6 +213,8 @@ const (
 	textWatermarkMaxDPI = 3000
 	// Gap kept between the text block and the image edges, in image pixels.
 	textWatermarkPadding = 5
+	// Gap kept between two lines of the text block, in image pixels.
+	textWatermarkLineSpacing = 5
 )
 
 // textAlign is the horizontal alignment of the lines inside the text block.
@@ -338,7 +340,7 @@ func (b *textWatermarkBlock) clear() {
 func renderTextWatermarkBlock(lines []string, dpi int) (*textWatermarkBlock, error) {
 	b := &textWatermarkBlock{}
 
-	for _, line := range lines {
+	for i, line := range lines {
 		img := new(vips.Image)
 
 		if err := img.ApplyTextWatermark(line, dpi); err != nil {
@@ -351,6 +353,9 @@ func renderTextWatermarkBlock(lines []string, dpi int) (*textWatermarkBlock, err
 		b.lines = append(b.lines, img)
 		b.width = max(b.width, img.Width())
 		b.height += img.Height()
+		if i < len(lines)-1 {
+			b.height += textWatermarkLineSpacing
+		}
 	}
 
 	return b, nil
@@ -479,7 +484,7 @@ func (p *Processor) renderTextWatermark(
 	// Lines are aligned to the edge the block is anchored to, so a short line
 	// above a long one still ends flush with the long one.
 	y := top
-	for _, line := range block.lines {
+	for i, line := range block.lines {
 		x := left + align.offset(block.width, line.Width())
 
 		// img.ApplyWatermark applies the opacity to the watermark alpha channel.
@@ -488,6 +493,9 @@ func (p *Processor) renderTextWatermark(
 		}
 
 		y += line.Height()
+		if i < len(block.lines)-1 {
+			y += textWatermarkLineSpacing
+		}
 	}
 
 	return nil
