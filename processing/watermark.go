@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/imgproxy/imgproxy/v4/imagedata"
 	"github.com/imgproxy/imgproxy/v4/imath"
@@ -210,32 +211,149 @@ const (
 	// Safety cap so a very short text on a huge image can't allocate an
 	// enormous text bitmap.
 	textWatermarkMaxDPI = 3000
+	// Gap kept between the text block and the image edges, in image pixels.
+	textWatermarkPadding = 5
 )
 
-// textWatermarkDPI measures the text at the reference DPI and returns the DPI
-// that makes it fill targetWidth, capped so it can't overflow maxHeight.
-// ok is false when the text renders nothing (e.g. empty Pango markup).
-func textWatermarkDPI(text string, targetWidth, maxHeight int) (dpi int, ok bool, err error) {
+// textAlign is the horizontal alignment of the lines inside the text block.
+type textAlign int
+
+const (
+	textAlignLeft textAlign = iota
+	textAlignCenter
+	textAlignRight
+)
+
+// textWatermarkAlign derives the line alignment from the watermark gravity:
+// the text block is anchored to the image edge it was positioned against, so
+// its lines follow that same edge. Anything centred stays centred.
+func textWatermarkAlign(gt GravityType) textAlign {
+	switch gt {
+	case GravityEast, GravityNorthEast, GravitySouthEast:
+		return textAlignRight
+	case GravityWest, GravityNorthWest, GravitySouthWest:
+		return textAlignLeft
+	default:
+		return textAlignCenter
+	}
+}
+
+// offset returns the x offset of a line inside a block of blockWidth.
+func (a textAlign) offset(blockWidth, lineWidth int) int {
+	switch a {
+	case textAlignRight:
+		return blockWidth - lineWidth
+	case textAlignCenter:
+		return (blockWidth - lineWidth) / 2
+	default:
+		return 0
+	}
+}
+
+// splitTextWatermarkLines splits the text into lines. Splitting happens before
+// any markup is injected so that every line keeps balanced Pango markup.
+func splitTextWatermarkLines(text string) []string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			// Pango renders nothing for an empty line, which would collapse the
+			// blank row. A single space keeps the line height.
+			lines[i] = " "
+		}
+	}
+
+	return lines
+}
+
+// measureTextWatermarkLine returns the pixel size of a line rendered at the
+// reference DPI.
+func measureTextWatermarkLine(line string) (int, int, error) {
 	m := new(vips.Image)
 	defer m.Clear()
 
-	if err := m.ApplyTextWatermark(text, textWatermarkRefDPI); err != nil {
-		return 0, false, err
+	if err := m.ApplyTextWatermark(line, textWatermarkRefDPI); err != nil {
+		return 0, 0, err
 	}
 
-	w, h := m.Width(), m.Height()
-	if w <= 0 || h <= 0 {
-		return 0, false, nil
+	return m.Width(), m.Height(), nil
+}
+
+// textSize is the pixel size of a rendered piece of text.
+type textSize struct {
+	width  int
+	height int
+}
+
+// textWatermarkDPI takes the sizes of every line measured at the reference DPI
+// and returns the DPI that makes the widest line fill targetWidth, capped so
+// the whole block can't be taller than maxHeight.
+func textWatermarkDPI(sizes []textSize, targetWidth, maxHeight int) int {
+	var maxWidth, totalHeight int
+
+	for _, size := range sizes {
+		maxWidth = max(maxWidth, size.width)
+		totalHeight += size.height
 	}
 
-	scale := float64(targetWidth) / float64(w)
-	if maxHeight > 0 && float64(h)*scale > float64(maxHeight) {
-		scale = float64(maxHeight) / float64(h)
+	if maxWidth <= 0 || totalHeight <= 0 {
+		return 0
 	}
 
-	dpi = min(max(int(math.Round(textWatermarkRefDPI*scale)), 1), textWatermarkMaxDPI)
+	scale := float64(targetWidth) / float64(maxWidth)
+	if maxHeight > 0 && float64(totalHeight)*scale > float64(maxHeight) {
+		scale = float64(maxHeight) / float64(totalHeight)
+	}
 
-	return dpi, true, nil
+	return min(max(int(math.Round(textWatermarkRefDPI*scale)), 1), textWatermarkMaxDPI)
+}
+
+// insetWatermarkPosition pulls the text block back inside the padded area so the
+// gap survives explicit offsets and rounding.
+func insetWatermarkPosition(
+	left, top, imgWidth, imgHeight, blockWidth, blockHeight, pad int,
+) (int, int) {
+	left = max(min(left, imgWidth-pad-blockWidth), pad)
+	top = max(min(top, imgHeight-pad-blockHeight), pad)
+
+	return left, top
+}
+
+// textWatermarkBlock is a stack of rendered text lines.
+type textWatermarkBlock struct {
+	lines  []*vips.Image
+	width  int // width of the widest line
+	height int // sum of all line heights
+}
+
+func (b *textWatermarkBlock) clear() {
+	for _, line := range b.lines {
+		line.Clear()
+	}
+	b.lines = nil
+}
+
+// renderTextWatermarkBlock renders every line at dpi and measures the block
+// they form.
+func renderTextWatermarkBlock(lines []string, dpi int) (*textWatermarkBlock, error) {
+	b := &textWatermarkBlock{}
+
+	for _, line := range lines {
+		img := new(vips.Image)
+
+		if err := img.ApplyTextWatermark(line, dpi); err != nil {
+			img.Clear()
+			b.clear()
+
+			return nil, err
+		}
+
+		b.lines = append(b.lines, img)
+		b.width = max(b.width, img.Width())
+		b.height += img.Height()
+	}
+
+	return b, nil
 }
 
 // renderTextWatermark renders a Pango-markup text watermark onto the image.
@@ -255,71 +373,124 @@ func (p *Processor) renderTextWatermark(
 		return nil
 	}
 
+	lines := splitTextWatermarkLines(text)
+
 	// Pango renders the text in black unless the markup says otherwise, so an
-	// explicit watermark.text_color has to be injected into the markup.
+	// explicit watermark.text_color has to be injected into the markup. The
+	// span is applied per line: wrapping the whole text would leave it
+	// unbalanced after the text is split into lines.
 	if po.Has(keys.WatermarkTextColor) {
 		c := po.WatermarkTextColor()
-		text = fmt.Sprintf(
-			`<span foreground="#%02X%02X%02X">%s</span>`,
-			c.R, c.G, c.B, text,
-		)
+		span := fmt.Sprintf(`<span foreground="#%02X%02X%02X">%%s</span>`, c.R, c.G, c.B)
+
+		for i, line := range lines {
+			lines[i] = fmt.Sprintf(span, line)
+		}
 	}
 
 	width := img.Width()
 	height := img.Height()
 
-	// Text width follows the text scale option; when unset, fill the image.
-	textWidth := width
+	// Keep a small gap between the text and the image edges. Images narrower
+	// than twice the gap just lose the gap instead of failing.
+	pad := textWatermarkPadding
+	if width <= 2*pad || height <= 2*pad {
+		pad = 0
+	}
+	innerWidth := width - 2*pad
+	innerHeight := height - 2*pad
+
+	// Text width follows the text scale option; when unset, fill the image
+	// (minus the gap on both sides).
+	textWidth := innerWidth
 	if textScale := po.WatermarkTextScale(); textScale > 0 {
-		textWidth = max(imath.ScaleToEven(width, textScale), 1)
+		textWidth = min(max(imath.ScaleToEven(width, textScale), 1), innerWidth)
 	}
 
 	// Adaptive font size: measure the glyphs at a reference DPI, then render
-	// again at the DPI that makes the text fill textWidth. Unlike a
+	// again at the DPI that makes the widest line fill textWidth. Unlike a
 	// character-count estimate this is immune to Pango markup, mixed alphabets
 	// (CJK vs Latin) and explicit colors.
-	dpi, ok, err := textWatermarkDPI(text, textWidth, height)
-	if err != nil {
-		return err
+	sizes := make([]textSize, len(lines))
+	for i, line := range lines {
+		w, h, err := measureTextWatermarkLine(line)
+		if err != nil {
+			return err
+		}
+
+		sizes[i] = textSize{width: w, height: h}
 	}
-	if !ok {
+
+	dpi := textWatermarkDPI(sizes, textWidth, innerHeight)
+	if dpi == 0 {
+		// The text rendered nothing (e.g. empty Pango markup).
 		return nil
 	}
 
-	wm := new(vips.Image)
-	defer wm.Clear()
-
-	if err := wm.ApplyTextWatermark(text, dpi); err != nil {
+	block, err := renderTextWatermarkBlock(lines, dpi)
+	if err != nil {
 		return err
 	}
+	// Closure on purpose: `block` is reassigned when the DPI is shrunk below,
+	// and a plain `defer block.clear()` would keep clearing the first block.
+	defer func() { block.clear() }()
 
-	if err := wm.CopyMemory(); err != nil {
-		return err
+	// Line heights are measured separately and then summed, so rounding can
+	// make the block a couple of pixels larger than the space it has to fit in.
+	// Shrink the DPI until it fits and the gap is preserved.
+	for attempt := 0; (block.width > innerWidth || block.height > innerHeight) && dpi > 1 && attempt < 4; attempt++ {
+		scale := math.Min(
+			float64(innerWidth)/float64(max(block.width, 1)),
+			float64(innerHeight)/float64(max(block.height, 1)),
+		)
+
+		next := max(int(math.Floor(float64(dpi)*scale)), 1)
+		if next >= dpi {
+			next = dpi - 1
+		}
+
+		block.clear()
+
+		block, err = renderTextWatermarkBlock(lines, next)
+		if err != nil {
+			return err
+		}
+
+		dpi = next
 	}
 
-	// Strip metadata so no headers leak onto the image.
-	if err := wm.StripAll(); err != nil {
-		return err
-	}
-
-	// Position the text using the same gravity logic as the image watermark.
+	// Position the text block using the same gravity logic as the image
+	// watermark, then pull it back inside the padded area so the gap on every
+	// edge survives explicit offsets.
 	position := po.WatermarkPosition()
-	left, top := 0, 0
+	align := textWatermarkAlign(position)
+
+	left, top := pad, pad
 	if !shouldReplicateWatermark(position) {
 		gr := GravityOptions{
 			Type: position,
 			X:    po.WatermarkXOffset(),
 			Y:    po.WatermarkYOffset(),
 		}
-		left, top = calcPosition(width, height, wm.Width(), wm.Height(), &gr, offsetScale, true)
+		left, top = calcPosition(width, height, block.width, block.height, &gr, offsetScale, true)
+		left, top = insetWatermarkPosition(left, top, width, height, block.width, block.height, pad)
 	}
 
-	if left >= width || top >= height || -left >= wm.Width() || -top >= wm.Height() {
-		return nil
+	// Lines are aligned to the edge the block is anchored to, so a short line
+	// above a long one still ends flush with the long one.
+	y := top
+	for _, line := range block.lines {
+		x := left + align.offset(block.width, line.Width())
+
+		// img.ApplyWatermark applies the opacity to the watermark alpha channel.
+		if err := img.ApplyWatermark(line, x, y, opacity); err != nil {
+			return err
+		}
+
+		y += line.Height()
 	}
 
-	// img.ApplyWatermark applies the opacity to the watermark alpha channel.
-	return img.ApplyWatermark(wm, left, top, opacity)
+	return nil
 }
 
 func (p *Processor) watermark(c *Context) error {

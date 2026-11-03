@@ -96,7 +96,7 @@ b64 '<span weight="bold">吉林市</span><span foreground="#FF0000">城管</span
 
 `wmt` 第 3 个参数 = **文字宽度占图片宽度的比例**（0~1 的小数）：
 
-- 不传 → `1.0`，文字铺满整幅宽度
+- 不传 → `1.0`，文字铺满整幅宽度（左右各留 5px 缝，见 §五）
 - 常用 `0.2` ~ `0.4`
 
 **实现方式（两次渲染，不猜字号）**：
@@ -111,10 +111,30 @@ b64 '<span weight="bold">吉林市</span><span foreground="#FF0000">城管</span
 
 | 宽度占比 | 文字区实际尺寸 |
 |---|---|
-| 不传 | ≈ **396×80 px** |
+| 不传 | ≈ **396×80 px**（带 5px 边距后为 390×约 79 px） |
 | `0.3` | ≈ **127×32 px** |
 
-### 五、文字位置
+### 五、边距与多行对齐
+
+文字块四周固定留 **5px 缝隙**（图片小于 10px 时不加缝），偏移量再大也不会把字顶出画布。
+
+文本里带 `\n` 就是多行；多行**按水印位置对齐**：
+
+| 位置 | 行对齐 | 效果 |
+|---|---|---|
+| `ea` / `noea` / `soea`（右侧） | 右对齐 | 短行也贴右边，和长行右边缘齐 |
+| `we` / `nowe` / `sowe`（左侧） | 左对齐 | 短行贴左边 |
+| `ce` / `no` / `so`（居中） | 居中 | 各行中线对齐 |
+
+换行用 base64 之前写进文本即可：
+
+```bash
+b64 "吉林市城市管理\n行政执法支队"   # base64url 之后直接当 wmt 第 1 个参数
+```
+
+每行单独渲染再竖向堆叠，所以短行不会因为整块左边对齐而在右侧留一段空白。
+
+### 六、文字位置
 
 `wm` 第 2 个参数是位置代码（**短代码，不是 first/last 之类**）：
 
@@ -127,7 +147,7 @@ b64 '<span weight="bold">吉林市</span><span foreground="#FF0000">城管</span
 ⚠️ **东南是 `soea`，不是 `se`**；写错（如 `wm:0.8:se`）服务端会返回 `404 Invalid URL`。
 `re`（平铺）只对图片水印有效，文字水印用它会退化成贴在左上角。
 
-### 六、文字偏移量
+### 七、文字偏移量
 
 `wm` 第 3、4 个参数 = X / Y 偏移：
 
@@ -136,7 +156,7 @@ b64 '<span weight="bold">吉林市</span><span foreground="#FF0000">城管</span
 - 实测 `wm:1:soea:10:10` 相比 `wm:1:soea`，文字整体向内移动约 8~10px
 - ⚠️ 负值在这台实例上实测会让文字完全不出现，**先只用正值/省略**
 
-### 七、透明度
+### 八、透明度
 
 `wm` 第 1 个参数 = 透明度 0~1，不传默认 `1.0`（不透明）：
 
@@ -149,7 +169,7 @@ b64 '<span weight="bold">吉林市</span><span foreground="#FF0000">城管</span
 
 > 注意 `wm:` 的第一个数字是**透明度**，不是缩放；文字大小由 `wmt` 第 3 个参数控制。
 
-### 八、生成签名 URL
+### 九、生成签名 URL
 
 实例开启了签名校验（未签名一律 `403 Forbidden`）。算法与官方一致：
 
@@ -172,7 +192,7 @@ sig = base64.urlsafe_b64encode(mac[:32]).decode().rstrip("=")
 print(f"http://192.168.2.94:21000/{sig}{path}")
 ```
 
-### 九、完整示例
+### 十、完整示例
 
 ```
 # 右下角、30% 宽、红色、80% 不透明
@@ -198,7 +218,7 @@ http://192.168.2.94:21000/gL7ZIBH65A2MOM_JkRcRtvnA5S_syaK1KUZzakDm0bU/bl:40/wmt:
 http://192.168.2.94:21000/RjBzllF_VuEOAvfXR5vi4LW1_VR5AmVwyeXMgIPGozU/bl:40/wmt:5ZCJ5p6X5biC5Z-O566h:FF0000:0.3/plain/https://picsum.photos/id/1/400/400.jpg
 ```
 
-### 十、常见坑
+### 十一、常见坑
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -208,9 +228,11 @@ http://192.168.2.94:21000/RjBzllF_VuEOAvfXR5vi4LW1_VR5AmVwyeXMgIPGozU/bl:40/wmt:
 | 文字不出来 | 文本 base64 解码为空；或 `wmt` 与 `wm` 之间少写了 `/` |
 | 字太大/太小 | 调 `wmt` 第 3 个参数（0.2~0.4 常用），不要用 `wm` 的缩放参数 |
 | 中文变成方块 | 镜像里缺 CJK 字体：需安装 `fonts-noto-cjk` 或 `fonts-wqy-zenhei` |
+| 多行时短的那行右边空一段 | 旧构建整块左对齐；重建后按位置对齐（右下 → 右对齐），并把边距固定为 5px |
+| 字贴着图片边缘 | 旧构建铺满整幅宽；重建后四周留 5px |
 | 输出整块黑矩形 | 该构建的 `vips_dtext` 实现把 alpha 掩膜当成了彩色图（已在 `vips/vips.c` 用 `vips_text(..., "rgba", TRUE)` 修复） |
 
-### 十一、实测记录（2026-11-02，`192.168.2.94:21000`）
+### 十二、实测记录（2026-11-02，`192.168.2.94:21000`）
 
 测试源图 `https://picsum.photos/id/1/400/400.jpg`（400×400），先加 `bl:40` 模糊成近似纯色底，
 再和无水印的同底图逐像素比对，得到文字实际占据的区域（表中文本为可读形式，实际 URL 里是 base64url）：
@@ -331,3 +353,4 @@ See [LICENSE](https://github.com/imgproxy/imgproxy/blob/master/LICENSE) for the 
 ## ⚠️ Security Contact
 
 To report a security vulnerability, please contact us at security@imgproxy.net. We will coordinate the fix and disclosure.
+
