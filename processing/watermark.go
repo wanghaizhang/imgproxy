@@ -204,6 +204,40 @@ func (p *Processor) applyWatermark(
 	return nil
 }
 
+const (
+	// Reference DPI used to measure the text before scaling it to the target.
+	textWatermarkRefDPI = 72
+	// Safety cap so a very short text on a huge image can't allocate an
+	// enormous text bitmap.
+	textWatermarkMaxDPI = 3000
+)
+
+// textWatermarkDPI measures the text at the reference DPI and returns the DPI
+// that makes it fill targetWidth, capped so it can't overflow maxHeight.
+// ok is false when the text renders nothing (e.g. empty Pango markup).
+func textWatermarkDPI(text string, targetWidth, maxHeight int) (dpi int, ok bool, err error) {
+	m := new(vips.Image)
+	defer m.Clear()
+
+	if err := m.ApplyTextWatermark(text, textWatermarkRefDPI); err != nil {
+		return 0, false, err
+	}
+
+	w, h := m.Width(), m.Height()
+	if w <= 0 || h <= 0 {
+		return 0, false, nil
+	}
+
+	scale := float64(targetWidth) / float64(w)
+	if maxHeight > 0 && float64(h)*scale > float64(maxHeight) {
+		scale = float64(maxHeight) / float64(h)
+	}
+
+	dpi = min(max(int(math.Round(textWatermarkRefDPI*scale)), 1), textWatermarkMaxDPI)
+
+	return dpi, true, nil
+}
+
 // renderTextWatermark renders a Pango-markup text watermark onto the image.
 // The text is Pango-markup encoded (e.g. "<span foreground='red' weight='bold'>
 // Hello</span>"). Opacity, position, and scale follow the same conventions as
@@ -240,17 +274,22 @@ func (p *Processor) renderTextWatermark(
 		textWidth = max(imath.ScaleToEven(width, textScale), 1)
 	}
 
-	// Estimate a reasonable text height from the character count. libvips
-	// auto-fits the font size so the text fills the width x height box, and
-	// gravity positioning works on that box.
-	runes := len([]rune(text))
-	fontSize := float64(max(textWidth/max(runes, 1), 8))
-	textHeight := int(fontSize * 1.2)
+	// Adaptive font size: measure the glyphs at a reference DPI, then render
+	// again at the DPI that makes the text fill textWidth. Unlike a
+	// character-count estimate this is immune to Pango markup, mixed alphabets
+	// (CJK vs Latin) and explicit colors.
+	dpi, ok, err := textWatermarkDPI(text, textWidth, height)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
 
 	wm := new(vips.Image)
 	defer wm.Clear()
 
-	if err := wm.ApplyTextWatermark(text, textWidth, textHeight); err != nil {
+	if err := wm.ApplyTextWatermark(text, dpi); err != nil {
 		return err
 	}
 

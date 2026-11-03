@@ -88,7 +88,7 @@ int vips_embed_go(VipsImage *in, VipsImage **out, int x, int y, int width, int h
 int vips_apply_watermark(VipsImage *in, VipsImage *watermark, VipsImage **out, int left, int top,
      double opacity);
 
-int vips_dtext_go(const char *text, int width, int height, VipsImage **out);
+int vips_dtext_go(const char *text, int dpi, VipsImage **out);
 
 int vips_linecache_seq(VipsImage *in, VipsImage **out, int tile_height);
 

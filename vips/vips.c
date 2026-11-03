@@ -1126,10 +1126,9 @@ vips_apply_watermark(VipsImage *in, VipsImage *watermark, VipsImage **out, int l
 }
 
 int
-vips_dtext_go(const char *text, int width, int height, VipsImage **out)
+vips_dtext_go(const char *text, int dpi, VipsImage **out)
 {
-  if (width < 1) width = 1;
-  if (height < 1) height = 1;
+  if (dpi < 1) dpi = 72;
 
   /* "rgba" makes vips_text return a 4-band, straight-alpha sRGB image with the
    * Pango markup colours already applied.
@@ -1139,11 +1138,16 @@ vips_dtext_go(const char *text, int width, int height, VipsImage **out)
    * addalpha) produces an opaque box: colourspace turns the mask into
    * white-text-on-black and addalpha appends alpha = 255 everywhere, so
    * compositing it over the image paints a solid rectangle.
+   *
+   * No width/height is passed on purpose: libvips would auto-fit the text into
+   * that box (and wrap it), while the caller sizes the text by rendering twice
+   * — once at a reference DPI to measure the glyphs, once at the DPI that makes
+   * them fill the requested width. That keeps the size independent of the
+   * character count, the alphabet and any markup.
    */
   return vips_text(out, text,
-      "width", width,
-      "height", height,
       "font", "sans",
+      "dpi", dpi,
       "rgba", TRUE,
       NULL);
 }

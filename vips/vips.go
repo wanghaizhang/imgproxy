@@ -875,10 +875,10 @@ func (img *Image) ApplyWatermark(wm *Image, left, top int, opacity float64) erro
 	return nil
 }
 
-func (img *Image) ApplyTextWatermark(text string, width, height int) error {
+func (img *Image) ApplyTextWatermark(text string, dpi int) error {
 	var tmp *C.VipsImage
 
-	if C.vips_dtext_go(cachedCString(text), C.int(width), C.int(height), &tmp) != 0 {
+	if C.vips_dtext_go(cachedCString(text), C.int(dpi), &tmp) != 0 {
 		return Error()
 	}
 	img.swapAndUnref(tmp)
